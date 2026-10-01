@@ -3,7 +3,7 @@ from collections.abc import Generator  # noqa: I001
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from api.app.core.config import get_settings
+from app.core.config import get_settings
 
 
 settings = get_settings()
