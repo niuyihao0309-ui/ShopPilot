@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: ecommerce-operation-assistant-api
+Version: 0.1.0
+Summary: FastAPI backend for Ecommerce Operation Assistant.
+Requires-Python: >=3.12
+Requires-Dist: alembic
+Requires-Dist: celery[redis]
+Requires-Dist: cryptography
+Requires-Dist: fastapi
+Requires-Dist: httpx
+Requires-Dist: langgraph
+Requires-Dist: langgraph-checkpoint-postgres
+Requires-Dist: opentelemetry-api
+Requires-Dist: opentelemetry-exporter-otlp-proto-http
+Requires-Dist: opentelemetry-sdk
+Requires-Dist: psycopg[binary,pool]
+Requires-Dist: pydantic-settings
+Requires-Dist: pymysql
+Requires-Dist: python-multipart
+Requires-Dist: sqlalchemy
+Requires-Dist: uvicorn[standard]
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"

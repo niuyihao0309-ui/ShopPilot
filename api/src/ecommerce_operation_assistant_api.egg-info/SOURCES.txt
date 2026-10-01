@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/api/__init__.py
+src/ecommerce_operation_assistant_api.egg-info/PKG-INFO
+src/ecommerce_operation_assistant_api.egg-info/SOURCES.txt
+src/ecommerce_operation_assistant_api.egg-info/dependency_links.txt
+src/ecommerce_operation_assistant_api.egg-info/requires.txt
+src/ecommerce_operation_assistant_api.egg-info/top_level.txt
