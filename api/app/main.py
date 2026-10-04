@@ -1,18 +1,16 @@
-from fastapi import FastAPI  # noqa: I001
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.api.routes import auth, health
-from app.core.config import get_settings
-
+from fastapi.staticfiles import StaticFiles
+from app.api.routes import model_settings, auth, health, products, promotion_links, stores, users, workspace
+from app.core.config import API_DIR, get_settings
 
 settings = get_settings()
-app = FastAPI(title=settings.app_name)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title=settings.app_name + ' — 第03篇业务系统')
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
+                   allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 app.include_router(health.router)
-app.include_router(auth.router, prefix="/api/v1")
+for route in [model_settings, auth, products, promotion_links, stores, users, workspace]:
+    app.include_router(route.router, prefix='/api/v1')
+uploads_dir = API_DIR / 'uploads'
+uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount('/uploads', StaticFiles(directory=uploads_dir), name='uploads')
