@@ -79,13 +79,13 @@ def test_competitor_creative_performance_review_flow(client):
         assert len(detail[key]) == 1, key
 
 
-def test_ai_boundary_is_explicit_and_does_not_write(client):
+def test_ai_boundary_is_explicit_and_writes_diagnosis(client):
+    # 诊断生成已在后续阶段接入：接口产出结构化诊断并落库，且不会顺带触发素材生成任务。
     item = product(client)
     response = client.post(f"/api/v1/products/{item['id']}/diagnoses/generate")
-    assert response.status_code == 501
-    assert '尚未接入' in response.json()['detail']
+    assert response.status_code == 201
     detail = client.get(f"/api/v1/products/{item['id']}").json()
-    assert detail['diagnoses'] == []
+    assert len(detail['diagnoses']) >= 1
     assert detail['generation_jobs'] == []
 
 
@@ -106,7 +106,8 @@ def test_swagger_and_stage_import_boundary(client):
     spec = client.get('/openapi.json').json()
     assert spec['components']['securitySchemes']['HTTPBearer']['scheme'] == 'bearer'
     assert spec['paths']['/api/v1/products']['post']['security'] == [{'HTTPBearer': []}]
-    assert not any(name.startswith('app.agents') for name in sys.modules)
-    assert 'app.services.llm' not in sys.modules
+    # 完整阶段下 Agent 与 LLM 模块随应用加载，这里校验它们可被正常导入。
+    import app.agents  # noqa: F401
+    import app.services.llm  # noqa: F401
     client.headers.pop('Authorization')
     assert client.get('/api/v1/products').status_code == 401

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -76,6 +77,19 @@ class Settings(BaseSettings):
             return self.agent_checkpoint_database_url
         return f"postgresql://{self.agent_checkpoint_user}:{self.agent_checkpoint_password}@{self.agent_checkpoint_host}:{self.agent_checkpoint_port}/{self.agent_checkpoint_database}"
 
+    #3. 检查点连接串：账号、密码、库名统一做 URL 编码，避免密码里的 @ : / ? 等保留字符破坏连接串结构
+    @property
+    def agent_checkpoint_connection_url(self) -> str:
+        if self.agent_checkpoint_database_url:
+            return self.agent_checkpoint_database_url
+        user = quote(self.agent_checkpoint_user, safe="")
+        password = quote(self.agent_checkpoint_password, safe="")
+        database = quote(self.agent_checkpoint_database, safe="")
+        return (
+            f"postgresql://{user}:{password}@{self.agent_checkpoint_host}:"
+            f"{self.agent_checkpoint_port}/{database}"
+        )
+
     #后置参数校验
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
@@ -91,7 +105,7 @@ class Settings(BaseSettings):
         if self.app_env.lower() in {"production", "prod"}:
             # 保证令牌密码的安全等级
             if _is_placeholder_or_weak(self.auth_secret_key, min_length=32):
-                raise ValueError("AUTH_SECRET_KEY must be set to a strong value in production")
+                raise ValueError("Production requires AUTH_SECRET_KEY to be a random secret with at least 32 characters.")
             # 获取配置文件的检查点账号密码
             checkpoint_password = self.agent_checkpoint_password
             if self.checkpoint_database_url:
@@ -100,7 +114,7 @@ class Settings(BaseSettings):
                 except Exception as exc:
                     raise ValueError(f"Invalid AGENT_CHECKPOINT_DATABASE_URL: {exc}") from exc
             if _is_placeholder_or_weak(checkpoint_password, min_length=16):
-                raise ValueError("AGENT_CHECKPOINT_PASSWORD must be set to a strong value in production")
+                raise ValueError("Production requires a strong Agent checkpoint database password.")
         return self
 
 

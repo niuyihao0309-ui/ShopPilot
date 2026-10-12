@@ -901,19 +901,6 @@ def generate_main_image_creative_plans(
     db: SessionDep,
     _current_user: Annotated[User, Depends(require_edit_permission)],
 ) -> list[CreativePlan]:
-    raise HTTPException(status_code=501, detail="本阶段尚未接入，请完成后续大模型或 Agent 章节。")
-
-
-@router.post(
-    "/{product_id}/creative-plans/main-images/generate",
-    response_model=list[CreativePlanRead],
-    status_code=status.HTTP_201_CREATED,
-)
-def generate_main_image_creative_plans(
-    product_id: int,
-    db: SessionDep,
-    _current_user: Annotated[User, Depends(require_edit_permission)],
-) -> list[CreativePlan]:
     """处理生成主流程图片创意plans接口；完成身份、Workspace、资源归属和输入校验后返回结构化结果。"""
     # 先完成认证、Workspace 与资源归属校验，再进入会产生副作用的服务调用。
     get_product_or_404(db, product_id)

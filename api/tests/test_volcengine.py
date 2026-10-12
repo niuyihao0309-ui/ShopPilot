@@ -1,6 +1,10 @@
 from datetime import UTC, datetime
 
-from app.services.video_generation import _aspect_ratio_from_size, _duration_to_frames
+from app.services.video_generation import (
+    VideoGenerationError,
+    _aspect_ratio_from_size,
+    _duration_to_frames,
+)
 from app.services.volcengine import parse_access_key_pair, signed_json_headers
 
 
@@ -30,7 +34,16 @@ def test_signed_json_headers_are_deterministic() -> None:
 
 def test_jimeng_video_helpers() -> None:
     """验证“jimeng视频helpers”场景，确保重构后仍满足预期业务与安全边界。"""
+    # 即梦3.0 720P 官方仅支持 5 秒(121帧) / 10 秒(241帧)。
     assert _duration_to_frames(5) == 121
-    assert _duration_to_frames(8) == 193
+    assert _duration_to_frames(10) == 241
     assert _aspect_ratio_from_size("1280*720") == "16:9"
     assert _aspect_ratio_from_size("720*1280") == "9:16"
+
+
+def test_jimeng_video_rejects_unsupported_duration() -> None:
+    """即梦3.0仅支持5/10秒，其他时长必须报错，而不是被静默换算。"""
+    import pytest
+
+    with pytest.raises(VideoGenerationError):
+        _duration_to_frames(8)

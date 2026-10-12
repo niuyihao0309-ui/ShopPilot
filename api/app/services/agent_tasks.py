@@ -339,8 +339,10 @@ def _validate_context_scope(
     if product_id is not None:
         product = db.get(Product, product_id)
         if product is None or product.workspace_id != workspace_id:
-            # raise AgentTaskStateError(f"Product {product_id} does not exist in workspace {workspace_id}")
-            raise AgentTaskStateError(f"Product {product_id} does not exist in workspace {workspace_id}")
+            # 同时给出具体定位和不变量结论，便于排查跨 Workspace 误引用。
+            raise AgentTaskStateError(
+                f"Product {product_id} does not exist in workspace {workspace_id} (does not belong to current Workspace)"
+            )
     store = None
     store_id = _optional_int(context.get("store_id"))
     if store_id is not None:

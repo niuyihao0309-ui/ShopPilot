@@ -160,7 +160,7 @@ def test_workspace_task_api_rejects_cross_workspace_context(monkeypatch) -> None
         app.dependency_overrides.clear()
 
     assert response.status_code == 422
-    assert "current Workspace" in response.json()["detail"]
+    assert "does not exist in workspace" in response.json()["detail"]
 
 
 def test_workspace_can_disable_single_workflow(monkeypatch) -> None:

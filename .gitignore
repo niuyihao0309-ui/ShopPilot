@@ -1,11 +1,34 @@
+# ==================== 密钥 / 环境变量 ====================
 .env
+.env.*
+!.env.example
+*.bak
+*.bak-*
+
+# ==================== Python ====================
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+celerybeat-schedule.*
+
+# ==================== Node / Next.js ====================
 node_modules/
 .next/
+out/
+npm-debug.log*
+yarn-error.log*
+
+# ==================== 运行时产物 ====================
 uploads/
 *.tar
 *.tar.gz
+smoke_report_*
+
+# ==================== 本地工具 / 非源码文件 ====================
+.workbuddy/
+out.json
+dev.bat
+stop.bat
+面试背诵笔记.md
