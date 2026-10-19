@@ -44,7 +44,7 @@ def generate_main_image_asset(
     settings = settings or get_runtime_settings()
     if not is_image_generation_configured(settings):
         raise ImageGenerationNotConfiguredError("Image generation provider is not configured.")
-    if settings.image_provider not in {"dashscope", "jimeng"}:
+    if settings.image_provider not in {"dashscope", "jimeng", "siliconflow"}:
         raise ImageGenerationNotConfiguredError(
             f"Unsupported image provider: {settings.image_provider}"
         )
@@ -53,7 +53,13 @@ def generate_main_image_asset(
 
     # 生成前清洗 prompt，减少不可见字符和特殊货币符号导致供应商接口解析失败的概率。
     prompt = _sanitize_image_prompt(_main_image_prompt(creative_plan))
-    if settings.image_provider == "jimeng":
+    if settings.image_provider == "siliconflow":
+        # 硅基流动走 OpenAI 兼容的同步出图接口（POST /v1/images/generations），
+        # 一次请求直接返回图片 URL，没有 task_id 和轮询环节。
+        result = _create_siliconflow_image(prompt, settings)
+        task_id = result.get("request_id", "")
+        image_url = _extract_siliconflow_image_url(result)
+    elif settings.image_provider == "jimeng":
         task_id = _create_jimeng_image_task(prompt, settings)
         result = _poll_jimeng_image_task(task_id, settings)
         image_url = _extract_jimeng_image_url(result)
@@ -83,6 +89,54 @@ def generate_main_image_asset(
         "url": public_path,
         "created_at": int(time.time()),
     }
+
+
+def _create_siliconflow_image(prompt: str, settings: Settings) -> dict[str, Any]:
+    """调用硅基流动文生图；同步返回结果，无异步任务与轮询。"""
+    # 按“输入归一化 → 业务校验 → 状态或持久化”推进，异常不得留下半完成结果。
+    url = _join_base_url(settings.image_base_url or "", "images/generations")
+    payload: dict[str, Any] = {
+        "model": settings.image_model,
+        "prompt": prompt,
+        # 硅基流动的尺寸写法是「宽x高」（字母 x），与项目内的「宽*高」不同，这里统一转换。
+        "image_size": _siliconflow_image_size(settings.image_size),
+        "batch_size": 1,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.image_api_key}",
+        "Content-Type": "application/json",
+    }
+    # 复用 dashscope 的 POST 封装，主要取其「失败重试 3 次」的容错能力。
+    try:
+        response = _post_dashscope_json(url, headers=headers, payload=payload, timeout=180)
+    except httpx.HTTPStatusError as exc:
+        raise ImageGenerationError(_provider_error_detail(exc.response)) from exc
+    except httpx.HTTPError as exc:
+        raise ImageGenerationError(
+            _http_error_detail("SiliconFlow image generation failed", exc)
+        ) from exc
+
+    return response.json()
+
+
+def _extract_siliconflow_image_url(result: dict[str, Any]) -> str:
+    """提取siliconflow图片URL，统一主流程中的格式、默认值和异常边界。"""
+    # 硅基流动按 OpenAI 兼容格式返回 {"images": [{"url": "..."}]}，老版本可能用 "data"。
+    for container in (result.get("images"), result.get("data")):
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if isinstance(item, dict):
+                url = item.get("url")
+                if isinstance(url, str) and url:
+                    return url
+    raise ImageGenerationError("SiliconFlow response did not contain an image url.")
+
+
+def _siliconflow_image_size(size: str) -> str:
+    """把项目内的 1024*1024 转成硅基流动要求的 1024x1024。"""
+    width, height = _parse_image_size(size)
+    return f"{width}x{height}"
 
 
 def _create_jimeng_image_task(prompt: str, settings: Settings) -> str:

@@ -15,6 +15,7 @@ from app.services.image_generation import (
     _create_dashscope_wan26_image,
     _create_dashscope_wan26_text_to_image_task,
     _create_jimeng_image_task,
+    _create_siliconflow_image,
     is_image_generation_configured,
 )
 from app.services.llm import LLMNotConfiguredError, LLMResponseError, create_json_chat_completion
@@ -85,6 +86,10 @@ def _test_image_model() -> dict:
         # 图片测试只创建供应商任务，不下载、不入素材库，避免测试污染运营资产。
         if settings.image_provider == 'jimeng':
             task_id = _create_jimeng_image_task(prompt, settings)
+        elif settings.image_provider == 'siliconflow':
+            # 硅基流动是同步接口，一次请求就返回图片 URL，没有 task_id。
+            result = _create_siliconflow_image(prompt, settings)
+            task_id = str(result.get('request_id') or 'sync')
         elif settings.image_model == 'wan2.6-t2i':
             task_id = _create_dashscope_wan26_text_to_image_task(prompt, settings)
         elif settings.image_model == 'wan2.6-image' or settings.image_model.startswith('qwen-image'):
