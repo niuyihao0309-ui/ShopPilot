@@ -1,3 +1,4 @@
+import threading
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -20,6 +21,38 @@ from app.services.video_generation import generate_video_asset
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RUNNING_TIMEOUT_MINUTES = 30
 
+# 入队时间统一回拨 1 秒：MySQL 的 DATETIME 是秒级精度且做四舍五入（不是截断），
+# 写入 now() 时微秒 >= 500ms 会被进位到“下一秒”。紧接着在同一秒内执行的 worker
+# 判断 due_at > now 就会误判成“未到期”直接退出，任务永久停在 pending。
+# 回拨 1 秒可保证落库值一定不晚于当前时间。
+DISPATCH_CLOCK_SKEW = timedelta(seconds=1)
+# 到期判断的容差：即使因为时钟漂移、驱动取整等原因出现几秒偏差，也不应阻塞执行。
+DUE_TOLERANCE = timedelta(seconds=2)
+
+
+def _dispatch_now() -> datetime:
+    """返回派发用的“当前时间”，已扣除时钟回拨量，避免秒级取整把任务推到未来。"""
+    return datetime.now(UTC) - DISPATCH_CLOCK_SKEW
+
+
+def _is_due(due_at: datetime | None, now: datetime | None = None) -> bool:
+    """判断任务是否已到期；无到期时间视为立即可跑，并容忍少量时间偏差。"""
+    if due_at is None:
+        return True
+    if due_at.tzinfo is None:
+        # SQLite/MySQL 驱动可能返回无时区值，统一按 UTC 解释。
+        due_at = due_at.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    return due_at <= current + DUE_TOLERANCE
+
+
+def _seconds_until(target: datetime, now: datetime | None = None) -> float:
+    """计算距离目标时间还有多少秒，已过期返回 0。"""
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    return max((target - current).total_seconds(), 0.0)
+
 
 def enqueue_generation_job(
     db: Session,
@@ -39,7 +72,7 @@ def enqueue_generation_job(
         result={},
         attempts=0,
         max_attempts=max_attempts,
-        next_run_at=datetime.now(UTC),
+        next_run_at=_dispatch_now(),
     )
     db.add(job)
     record_generation_job_event(
@@ -62,7 +95,7 @@ def retry_generation_job_record(job: GenerationJob) -> None:
     job.locked_by = None
     job.started_at = None
     job.finished_at = None
-    job.next_run_at = datetime.now(UTC)
+    job.next_run_at = _dispatch_now()
     record_generation_job_event(
         job,
         "retry_requested",
@@ -109,6 +142,7 @@ def mark_stale_running_generation_jobs(
             GenerationJob.started_at <= deadline,
         )
     ).all()
+    requeued: list[tuple[int, float]] = []
     for job in jobs:
         # 超时任务视为 worker 执行链路中断：释放锁并按重试策略重新排队，避免长期卡在 running。
         _mark_failed_or_retry(
@@ -123,19 +157,43 @@ def mark_stale_running_generation_jobs(
             message="调度器已处理运行超时任务。",
             payload={"timeout_minutes": timeout_minutes},
         )
+        # 重新排队的任务同样要主动安排下一次唤醒，否则会被永久搁置在 pending。
+        if job.status == GenerationJobStatus.PENDING:
+            delay = max(_seconds_until(job.next_run_at, current_time), 1.0) if job.next_run_at else 1.0
+            requeued.append((job.id, delay))
     db.commit()
+
+    for job_id, delay in requeued:
+        dispatch_generation_job(job_id, countdown=delay)
     return len(jobs)
 
 
-def dispatch_generation_job(job_id: int, background_tasks: object | None = None) -> None:
-    """调度生成任务；集中执行业务校验、状态变更与持久化，并返回可验证结果。"""
+def dispatch_generation_job(
+    job_id: int,
+    background_tasks: object | None = None,
+    *,
+    countdown: float = 0.0,
+) -> None:
+    """调度生成任务；集中执行业务校验、状态变更与持久化，并返回可验证结果。
+
+    countdown 大于 0 时表示延迟投递，用于失败退避重试——由派发方自己安排下一次唤醒，
+    不再依赖外部轮询器，避免 inline 模式下“设了未来时间却没人捡”导致任务永久挂起。
+    """
     # 按“输入归一化 → 业务校验 → 状态或持久化”推进，异常不得留下半完成结果。
     settings = get_settings()
     if settings.task_queue_backend == "celery":
         # 生产环境优先走 Celery，避免长耗时生成阻塞 Web 进程，也便于后续横向扩 worker。
         from app.worker.tasks import run_generation_job_task
 
-        run_generation_job_task.delay(job_id)
+        if countdown > 0:
+            run_generation_job_task.apply_async(args=[job_id], countdown=countdown)
+        else:
+            run_generation_job_task.delay(job_id)
+        return
+
+    if countdown > 0:
+        # inline 模式没有常驻轮询器，用 daemon 定时器把到期的重试重新投递一次。
+        _schedule_deferred_dispatch(job_id, countdown)
         return
 
     if background_tasks is not None and hasattr(background_tasks, "add_task"):
@@ -146,17 +204,24 @@ def dispatch_generation_job(job_id: int, background_tasks: object | None = None)
     run_generation_job(job_id)
 
 
+def _schedule_deferred_dispatch(job_id: int, countdown: float) -> None:
+    """inline 模式下用 daemon 定时器延迟唤醒任务；进程退出时自动丢弃，不影响关闭。"""
+    timer = threading.Timer(countdown, run_generation_job, args=(job_id,))
+    timer.daemon = True
+    timer.start()
+
+
 def process_next_generation_job(worker_id: str = "fastapi-background") -> int | None:
     """处理下次生成任务任务；集中执行业务校验、状态变更与持久化，并返回可验证结果。"""
     # 按“输入归一化 → 业务校验 → 状态或持久化”推进，异常不得留下半完成结果。
-    now = datetime.now(UTC)
+    deadline = datetime.now(UTC) + DUE_TOLERANCE
     with SessionLocal() as db:
         # 单次只取最早可执行任务，便于用定时器或单 worker 轮询时控制并发和重试节奏。
         statement = (
             select(GenerationJob)
             .where(
                 GenerationJob.status == GenerationJobStatus.PENDING,
-                (GenerationJob.next_run_at.is_(None)) | (GenerationJob.next_run_at <= now),
+                (GenerationJob.next_run_at.is_(None)) | (GenerationJob.next_run_at <= deadline),
             )
             .order_by(GenerationJob.created_at.asc())
             .limit(1)
@@ -180,16 +245,14 @@ def run_generation_job(job_id: int, worker_id: str = "fastapi-background") -> No
         if job is None or job.status != GenerationJobStatus.PENDING:
             return
 
-        # SQLite/MySQL 驱动可能返回无时区值，数据库时间按 UTC 解释。
-        due_at = job.next_run_at
-        if due_at is not None and due_at.tzinfo is None:
-            due_at = due_at.replace(tzinfo=UTC)
-        if due_at is not None and due_at > datetime.now(UTC):
+        # 未到期（例如退避中的重试）先让出，交给调度器或延迟派发重新唤醒。
+        if not _is_due(job.next_run_at):
             return
 
         _mark_running(job, worker_id)
         db.commit()
 
+        retry_delay: float | None = None
         try:
             creative_plan = db.scalars(
                 select(CreativePlan).where(CreativePlan.id == job.creative_plan_id)
@@ -211,11 +274,19 @@ def run_generation_job(job_id: int, worker_id: str = "fastapi-background") -> No
             )
         except Exception as exc:
             _mark_failed_or_retry(job, exc)
+            # 进入退避重试时由本任务自己安排下一次唤醒，不依赖外部轮询器。
+            # 至少留 1 秒，避免退避时间被算成 0 后当场同步递归重跑。
+            if job.status == GenerationJobStatus.PENDING and job.next_run_at is not None:
+                retry_delay = max(_seconds_until(job.next_run_at), 1.0)
         finally:
             job.locked_at = None
             job.locked_by = None
             job.finished_at = datetime.now(UTC)
             db.commit()
+
+    # 必须等事务提交后再派发：下一次执行要能读到 PENDING 状态，否则会被状态校验挡掉。
+    if retry_delay is not None:
+        dispatch_generation_job(job_id, countdown=retry_delay)
 
 
 def _mark_running(job: GenerationJob, worker_id: str) -> None:

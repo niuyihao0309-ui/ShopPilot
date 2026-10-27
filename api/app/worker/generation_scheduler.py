@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models import GenerationJob, GenerationJobStatus
-from app.services.generation_jobs import dispatch_generation_job
+from app.services.generation_jobs import DUE_TOLERANCE, dispatch_generation_job
 
 logger = logging.getLogger(__name__)
 SCAN_INTERVAL_SECONDS = 5
@@ -17,12 +17,15 @@ BATCH_SIZE = 20
 def dispatch_due_generation_jobs() -> int:
     """重新投递到期的 pending 任务，包括失败后等待重试和漏投递任务。"""
     now = datetime.now(UTC)
+    # 加上容差再查，避免秒级取整或时钟漂移让刚入队的任务在扫描时仍被判成“未到期”。
+    # 真正的执行与否仍由 run_generation_job 在行锁内复核，多捞几条不会导致重复执行。
+    deadline = now + DUE_TOLERANCE
     with SessionLocal() as db:
         job_ids = list(db.scalars(
             select(GenerationJob.id)
             .where(
                 GenerationJob.status == GenerationJobStatus.PENDING,
-                (GenerationJob.next_run_at.is_(None)) | (GenerationJob.next_run_at <= now),
+                (GenerationJob.next_run_at.is_(None)) | (GenerationJob.next_run_at <= deadline),
             )
             .order_by(GenerationJob.created_at.asc(), GenerationJob.id.asc())
             .limit(BATCH_SIZE)
